@@ -1,0 +1,42 @@
+//@version=6
+indicator("Gold Price Pulse - Historical Signals", overlay=true)
+
+string trendGroup = "Signal rules"
+string displayGroup = "Display"
+
+fastLength = input.int(20, "Fast EMA", group=trendGroup, minval=1)
+slowLength = input.int(50, "Slow EMA", group=trendGroup, minval=2)
+rsiLength = input.int(14, "RSI length", group=trendGroup, minval=1)
+rsiMidpoint = input.float(50.0, "RSI bullish/bearish level", group=trendGroup, minval=1, maxval=99, step=0.5)
+requireRsiConfirmation = input.bool(false, "Require RSI confirmation", group=trendGroup)
+showEma = input.bool(true, "Show EMA lines", group=displayGroup)
+showBackground = input.bool(true, "Shade bullish/bearish periods", group=displayGroup)
+
+fastEma = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+rsiValue = ta.rsi(close, rsiLength)
+ready = not na(slowEma) and not na(rsiValue)
+
+bullish = ready and fastEma > slowEma and close > slowEma
+bearish = ready and fastEma < slowEma and close < slowEma
+newBullish = ready and ta.crossover(fastEma, slowEma) and (not requireRsiConfirmation or rsiValue > rsiMidpoint)
+newBearish = ready and ta.crossunder(fastEma, slowEma) and (not requireRsiConfirmation or rsiValue < rsiMidpoint)
+
+plot(showEma ? fastEma : na, title="Fast EMA", color=color.orange, linewidth=2)
+plot(showEma ? slowEma : na, title="Slow EMA", color=color.blue, linewidth=2)
+
+plotshape(newBullish, title="Bullish signal", style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white, size=size.small)
+plotshape(newBearish, title="Bearish signal", style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white, size=size.small)
+
+stateColor = bullish ? color.new(color.green, 90) : bearish ? color.new(color.red, 90) : na
+bgcolor(showBackground ? stateColor : na, title="Signal state")
+
+var table statusPanel = table.new(position.top_right, 1, 2, border_width=1)
+if barstate.islast
+    statusText = bullish ? "BULLISH" : bearish ? "BEARISH" : "NEUTRAL"
+    statusColor = bullish ? color.green : bearish ? color.red : color.gray
+    table.cell(statusPanel, 0, 0, "GOLD PRICE PULSE", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 0, 1, statusText, text_color=color.white, bgcolor=statusColor)
+
+alertcondition(newBullish, title="Gold bullish EMA crossover", message="Gold fast EMA crossed above the slow EMA.")
+alertcondition(newBearish, title="Gold bearish EMA crossover", message="Gold fast EMA crossed below the slow EMA.")

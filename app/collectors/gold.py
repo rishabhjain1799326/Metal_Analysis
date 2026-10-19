@@ -1,19 +1,18 @@
-import os
-from pathlib import Path
-
 import requests
-from dotenv import load_dotenv
-
-
-# Project root
-BASE_DIR = Path(__file__).resolve().parents[2]
-
-# Load .env
-load_dotenv(BASE_DIR / ".env")
-
-API_KEY = os.getenv("TWELVE_DATA_API_KEY")
+from app.credentials import get_credential
 
 BASE_URL = "https://api.twelvedata.com/time_series"
+
+
+def _get_api_key() -> str:
+    api_key = get_credential("TWELVE_DATA_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "TWELVE_DATA_API_KEY not found. "
+            "For local use, add it to the project-root .env file. "
+            "For Streamlit Community Cloud, add it under App settings > Secrets."
+        )
+    return api_key
 
 
 def get_gold_prices(
@@ -27,17 +26,13 @@ def get_gold_prices(
     from Twelve Data.
     """
 
-    if not API_KEY:
-        raise ValueError(
-            "TWELVE_DATA_API_KEY not found. "
-            "Check your .env file."
-        )
+    api_key = _get_api_key()
 
     params = {
         "symbol": "XAU/USD",
         "interval": interval,
         "outputsize": outputsize,
-        "apikey": API_KEY
+        "apikey": api_key
     }
 
     if start_date:

@@ -1,35 +1,38 @@
-import os
-from pathlib import Path
-
 import requests
-from dotenv import load_dotenv
-
-
-# Project root
-BASE_DIR = Path(__file__).resolve().parents[2]
-
-# Load .env
-load_dotenv(BASE_DIR / ".env")
-
-API_KEY = os.getenv("FRED_API_KEY")
+from app.credentials import get_credential
 
 BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 
-def get_series(series_id: str, limit: int = 10):
+def get_series(
+    series_id: str,
+    limit: int = 10,
+    observation_start: str | None = None,
+    observation_end: str | None = None,
+    sort_order: str = "desc",
+):
 
-    if not API_KEY:
+    api_key = get_credential("FRED_API_KEY")
+    if not api_key:
         raise ValueError(
-            "FRED_API_KEY not found. Check your .env file."
+            "FRED_API_KEY not found. "
+            "For local use, add it to the project-root .env file. "
+            "For Streamlit Community Cloud, add it under App settings > Secrets."
         )
 
     params = {
         "series_id": series_id,
-        "api_key": API_KEY,
+        "api_key": api_key,
         "file_type": "json",
-        "sort_order": "desc",
+        "sort_order": sort_order,
         "limit": limit
     }
+
+    if observation_start:
+        params["observation_start"] = observation_start
+
+    if observation_end:
+        params["observation_end"] = observation_end
 
     try:
         response = requests.get(
