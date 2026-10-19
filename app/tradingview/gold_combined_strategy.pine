@@ -1,0 +1,120 @@
+//@version=6
+strategy("Gold Combined Macro + EMA Strategy", overlay=true, pyramiding=0, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.05, slippage=1)
+
+string symbolGroup = "FRED data symbols"
+string signalGroup = "Signal rules"
+string testGroup = "Backtest"
+string displayGroup = "Display"
+
+cpiSymbol = input.symbol("FRED:CPIAUCSL", "CPI index", group=symbolGroup)
+corePceSymbol = input.symbol("FRED:PCEPILFE", "Core PCE index", group=symbolGroup)
+fedFundsSymbol = input.symbol("FRED:FEDFUNDS", "Federal funds rate", group=symbolGroup)
+realYieldSymbol = input.symbol("FRED:DFII10", "10Y real yield", group=symbolGroup)
+unemploymentSymbol = input.symbol("FRED:UNRATE", "Unemployment rate", group=symbolGroup)
+
+signalMode = input.string("Macro + EMA confirmation", "Signal mode", options=["Macro only", "EMA crossover", "Macro + EMA confirmation", "Any signal"], group=signalGroup)
+tradeMode = input.string("Long only", "Trade direction", options=["Long only", "Long and short"], group=signalGroup)
+fastLength = input.int(20, "Fast EMA", group=signalGroup, minval=1)
+slowLength = input.int(50, "Slow EMA", group=signalGroup, minval=2)
+rsiLength = input.int(14, "RSI length", group=signalGroup, minval=1)
+rsiMidpoint = input.float(50.0, "RSI bullish/bearish level", group=signalGroup, minval=1, maxval=99, step=0.5)
+requireRsiConfirmation = input.bool(false, "Require RSI on EMA crossovers", group=signalGroup)
+inflationAccelerationThreshold = input.float(0.05, "Inflation acceleration threshold (pp)", group=signalGroup, minval=0, step=0.01)
+yieldChangeThreshold = input.float(0.05, "Yield change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+policyChangeThreshold = input.float(0.05, "Fed funds change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+unemploymentChangeThreshold = input.float(0.1, "Unemployment change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+momentumBars = input.int(5, "Gold momentum lookback (bars)", group=signalGroup, minval=1)
+momentumThreshold = input.float(1.0, "Gold momentum threshold (%)", group=signalGroup, minval=0, step=0.1)
+scoreThreshold = input.float(0.25, "Macro score threshold", group=signalGroup, minval=0.05, maxval=1.0, step=0.05)
+startDate = input.time(timestamp("01 Jan 2000 00:00 +0000"), "Backtest start", group=testGroup)
+endDate = input.time(timestamp("31 Dec 2099 23:59 +0000"), "Backtest end", group=testGroup)
+showEma = input.bool(true, "Show EMA lines", group=displayGroup)
+showBackground = input.bool(true, "Shade EMA trend", group=displayGroup)
+
+f_yoy_acceleration(string symbol, int observationLag) =>
+    [current, yearAgo, previous, previousYearAgo] = request.security(symbol, "M", [close[observationLag], close[observationLag + 12], close[observationLag + 1], close[observationLag + 13]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    not na(current) and not na(yearAgo) and not na(previous) and not na(previousYearAgo) and yearAgo != 0 and previousYearAgo != 0 ? (current / yearAgo - 1) * 100 - (previous / previousYearAgo - 1) * 100 : na
+
+f_change(string symbol, string sourceTimeframe, int observationLag) =>
+    [current, previous] = request.security(symbol, sourceTimeframe, [close[observationLag], close[observationLag + 1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    not na(current) and not na(previous) ? current - previous : na
+
+f_direction(float value, float threshold) =>
+    na(value) or math.abs(value) <= threshold ? 0.0 : math.sign(value)
+
+// Offset source observations to reduce lookahead; release delays remain approximate.
+cpiAcceleration = f_yoy_acceleration(cpiSymbol, 2)
+corePceAcceleration = f_yoy_acceleration(corePceSymbol, 2)
+fedFundsChange = f_change(fedFundsSymbol, "M", 2)
+unemploymentChange = f_change(unemploymentSymbol, "M", 2)
+realYieldChange = f_change(realYieldSymbol, "D", 1)
+
+macroDataReady = not na(cpiAcceleration) and not na(corePceAcceleration) and not na(fedFundsChange) and not na(unemploymentChange) and not na(realYieldChange)
+macroScore = macroDataReady ? 0.20 * f_direction(cpiAcceleration, inflationAccelerationThreshold) + 0.20 * f_direction(corePceAcceleration, inflationAccelerationThreshold) - 0.40 * f_direction(realYieldChange, yieldChangeThreshold) - 0.15 * f_direction(fedFundsChange, policyChangeThreshold) + 0.05 * f_direction(unemploymentChange, unemploymentChangeThreshold) : na
+goldChange = bar_index >= momentumBars and close[momentumBars] != 0 ? (close / close[momentumBars] - 1) * 100 : na
+goldScore = na(goldChange) ? 0.0 : goldChange > momentumThreshold ? 1.0 : goldChange < -momentumThreshold ? -1.0 : 0.0
+macroComposite = macroDataReady ? 0.75 * macroScore + 0.25 * goldScore : na
+
+macroBull = not na(macroComposite) and macroComposite > scoreThreshold
+macroBear = not na(macroComposite) and macroComposite < -scoreThreshold
+macroBuy = macroBull and not macroBull[1]
+macroSell = macroBear and not macroBear[1]
+
+fastEma = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+rsiValue = ta.rsi(close, rsiLength)
+priceReady = not na(slowEma) and not na(rsiValue)
+emaBull = priceReady and fastEma > slowEma
+emaBear = priceReady and fastEma < slowEma
+emaBuy = priceReady and ta.crossover(fastEma, slowEma) and (not requireRsiConfirmation or rsiValue > rsiMidpoint)
+emaSell = priceReady and ta.crossunder(fastEma, slowEma) and (not requireRsiConfirmation or rsiValue < rsiMidpoint)
+
+buySignal = switch signalMode
+    "Macro only" => macroBuy
+    "EMA crossover" => emaBuy
+    "Macro + EMA confirmation" => macroBull and emaBull and not (macroBull[1] and emaBull[1])
+    => macroBuy or emaBuy
+
+sellSignal = switch signalMode
+    "Macro only" => macroSell
+    "EMA crossover" => emaSell
+    "Macro + EMA confirmation" => macroBear and emaBear and not (macroBear[1] and emaBear[1])
+    => macroSell or emaSell
+
+inDateRange = time >= startDate and time <= endDate
+if inDateRange and buySignal
+    strategy.entry("Long", strategy.long)
+
+if inDateRange and sellSignal
+    if tradeMode == "Long and short"
+        strategy.entry("Short", strategy.short)
+    else
+        strategy.close("Long", comment="Sell signal")
+
+if not inDateRange and strategy.position_size != 0
+    strategy.close_all(comment="Outside backtest range")
+
+plot(showEma ? fastEma : na, title="Fast EMA", color=color.orange, linewidth=2)
+plot(showEma ? slowEma : na, title="Slow EMA", color=color.blue, linewidth=2)
+plotshape(inDateRange and buySignal, title="Combined buy signal", style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white, size=size.small)
+plotshape(inDateRange and sellSignal, title="Combined sell signal", style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white, size=size.small)
+
+emaBackground = emaBull ? color.new(color.green, 90) : emaBear ? color.new(color.red, 90) : na
+bgcolor(showBackground ? emaBackground : na, title="EMA trend")
+
+var table statusPanel = table.new(position.top_right, 2, 4, border_width=1)
+if barstate.islast
+    macroText = not macroDataReady ? "Unavailable" : macroBull ? "Bullish" : macroBear ? "Bearish" : "Neutral"
+    emaText = emaBull ? "Bullish" : emaBear ? "Bearish" : "Neutral"
+    activeText = buySignal ? "BUY" : sellSignal ? "SELL" : "WAIT"
+    table.cell(statusPanel, 0, 0, "COMBINED GOLD", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 1, 0, signalMode, text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 0, 1, "Macro", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 1, 1, macroText, text_color=color.white, bgcolor=macroBull ? color.green : macroBear ? color.red : color.gray)
+    table.cell(statusPanel, 0, 2, "EMA trend", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 1, 2, emaText, text_color=color.white, bgcolor=emaBull ? color.green : emaBear ? color.red : color.gray)
+    table.cell(statusPanel, 0, 3, "Current trigger", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 1, 3, activeText, text_color=color.white, bgcolor=buySignal ? color.green : sellSignal ? color.red : color.gray)
+
+alertcondition(buySignal, title="Combined Gold BUY", message="Combined Gold strategy generated a BUY signal.")
+alertcondition(sellSignal, title="Combined Gold SELL", message="Combined Gold strategy generated a SELL signal.")

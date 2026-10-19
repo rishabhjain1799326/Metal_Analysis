@@ -1,0 +1,76 @@
+//@version=6
+strategy("Gold Macro Context Strategy - Exploratory", overlay=true, pyramiding=0, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.05, slippage=1)
+
+string symbolGroup = "FRED data symbols"
+string signalGroup = "Signal rules"
+string testGroup = "Backtest"
+
+cpiSymbol = input.symbol("FRED:CPIAUCSL", "CPI index", group=symbolGroup)
+corePceSymbol = input.symbol("FRED:PCEPILFE", "Core PCE index", group=symbolGroup)
+fedFundsSymbol = input.symbol("FRED:FEDFUNDS", "Federal funds rate", group=symbolGroup)
+realYieldSymbol = input.symbol("FRED:DFII10", "10Y real yield", group=symbolGroup)
+unemploymentSymbol = input.symbol("FRED:UNRATE", "Unemployment rate", group=symbolGroup)
+
+inflationAccelerationThreshold = input.float(0.05, "Inflation acceleration threshold (pp)", group=signalGroup, minval=0, step=0.01)
+yieldChangeThreshold = input.float(0.05, "Yield change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+policyChangeThreshold = input.float(0.05, "Fed funds change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+unemploymentChangeThreshold = input.float(0.1, "Unemployment change threshold (pp)", group=signalGroup, minval=0, step=0.01)
+momentumBars = input.int(5, "Gold momentum lookback (bars)", group=signalGroup, minval=1)
+momentumThreshold = input.float(1.0, "Gold momentum threshold (%)", group=signalGroup, minval=0, step=0.1)
+scoreThreshold = input.float(0.25, "Bullish/bearish score threshold", group=signalGroup, minval=0.05, maxval=1.0, step=0.05)
+tradeMode = input.string("Long only", "Trade direction", options=["Long only", "Long and short"], group=signalGroup)
+startDate = input.time(timestamp("01 Jan 2000 00:00 +0000"), "Backtest start", group=testGroup)
+endDate = input.time(timestamp("31 Dec 2099 23:59 +0000"), "Backtest end", group=testGroup)
+
+f_yoy_acceleration(string symbol, int observationLag) =>
+    [current, yearAgo, previous, previousYearAgo] = request.security(symbol, "M", [close[observationLag], close[observationLag + 12], close[observationLag + 1], close[observationLag + 13]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    not na(current) and not na(yearAgo) and not na(previous) and not na(previousYearAgo) and yearAgo != 0 and previousYearAgo != 0 ? (current / yearAgo - 1) * 100 - (previous / previousYearAgo - 1) * 100 : na
+
+f_change(string symbol, string sourceTimeframe, int observationLag) =>
+    [current, previous] = request.security(symbol, sourceTimeframe, [close[observationLag], close[observationLag + 1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    not na(current) and not na(previous) ? current - previous : na
+
+f_direction(float value, float threshold) =>
+    na(value) or math.abs(value) <= threshold ? 0.0 : math.sign(value)
+
+// Monthly releases are delayed by two source observations; daily yields by one.
+cpiAcceleration = f_yoy_acceleration(cpiSymbol, 2)
+corePceAcceleration = f_yoy_acceleration(corePceSymbol, 2)
+fedFundsChange = f_change(fedFundsSymbol, "M", 2)
+unemploymentChange = f_change(unemploymentSymbol, "M", 2)
+realYieldChange = f_change(realYieldSymbol, "D", 1)
+
+dataReady = not na(cpiAcceleration) and not na(corePceAcceleration) and not na(fedFundsChange) and not na(unemploymentChange) and not na(realYieldChange)
+macroScore = dataReady ? 0.20 * f_direction(cpiAcceleration, inflationAccelerationThreshold) + 0.20 * f_direction(corePceAcceleration, inflationAccelerationThreshold) - 0.40 * f_direction(realYieldChange, yieldChangeThreshold) - 0.15 * f_direction(fedFundsChange, policyChangeThreshold) + 0.05 * f_direction(unemploymentChange, unemploymentChangeThreshold) : na
+goldChange = bar_index >= momentumBars and close[momentumBars] != 0 ? (close / close[momentumBars] - 1) * 100 : na
+goldScore = na(goldChange) ? 0.0 : goldChange > momentumThreshold ? 1.0 : goldChange < -momentumThreshold ? -1.0 : 0.0
+composite = dataReady ? 0.75 * macroScore + 0.25 * goldScore : na
+
+bullish = not na(composite) and composite > scoreThreshold
+bearish = not na(composite) and composite < -scoreThreshold
+newBullish = bullish and not bullish[1]
+newBearish = bearish and not bearish[1]
+inDateRange = time >= startDate and time <= endDate
+
+if inDateRange and newBullish
+    strategy.entry("Long", strategy.long)
+
+if inDateRange and newBearish
+    if tradeMode == "Long and short"
+        strategy.entry("Short", strategy.short)
+    else
+        strategy.close("Long", comment="Bearish macro context")
+
+if not inDateRange and strategy.position_size != 0
+    strategy.close_all(comment="Outside backtest range")
+
+plotshape(inDateRange and newBullish, title="Bullish macro signal", style=shape.labelup, location=location.belowbar, color=color.green, text="MACRO\nBUY", textcolor=color.white, size=size.small)
+plotshape(inDateRange and newBearish, title="Bearish macro signal", style=shape.labeldown, location=location.abovebar, color=color.red, text="MACRO\nSELL", textcolor=color.white, size=size.small)
+
+var table statusPanel = table.new(position.top_right, 1, 3, border_width=1)
+if barstate.islast
+    statusText = not dataReady ? "FRED data unavailable" : bullish ? "BULLISH" : bearish ? "BEARISH" : "NEUTRAL"
+    statusColor = not dataReady ? color.gray : bullish ? color.green : bearish ? color.red : color.gray
+    table.cell(statusPanel, 0, 0, "GOLD MACRO CONTEXT", text_color=color.white, bgcolor=color.black)
+    table.cell(statusPanel, 0, 1, statusText, text_color=color.white, bgcolor=statusColor)
+    table.cell(statusPanel, 0, 2, dataReady ? "Score: " + str.tostring(composite, "#.00") : "Check FRED symbols", text_color=color.white, bgcolor=color.new(color.black, 0))
