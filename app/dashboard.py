@@ -178,12 +178,10 @@ def render_gold_chart():
     try:
         gold_data = load_gold_prices()
     except (RuntimeError, ValueError) as exc:
-        st.error(
-            f"Could not load gold prices: {exc}",
-            help=(
-                "On Streamlit Community Cloud, open the app's Settings, select "
-                "Secrets, and add TWELVE_DATA_API_KEY = \"your key\"."
-            ),
+        st.error(f"Could not load gold prices: {exc}")
+        st.caption(
+            "On Streamlit Community Cloud, open the app's Settings → Secrets "
+            'and add TWELVE_DATA_API_KEY = "your key".'
         )
         return
 
